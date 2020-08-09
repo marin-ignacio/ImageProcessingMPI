@@ -1,1 +1,1 @@
-# DistributedImageProcessing
+# Distributed Image Processing
