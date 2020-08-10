@@ -1,12 +1,13 @@
 #include "../include/image_processing.h"
 
-unsigned char *** createMatriz(ALLEGRO_BITMAP *image){
+unsigned char *** createMatrix(ALLEGRO_BITMAP *image)
+{
 	const int width  = al_get_bitmap_width(image);
 	const int height = al_get_bitmap_height(image);
-	unsigned char *** ptr_image = allocateMemorySpaceForImage(&height, &width);
+	unsigned char ***ptr_image = allocateMemorySpaceForImage(&height, &width);
 	ALLEGRO_COLOR colorpixel =  al_get_pixel(image,0,0);
 	unsigned char r,g,b;
-	al_unmap_rgb(colorpixel,&r, &g, &b);
+	al_unmap_rgb(colorpixel, &r, &g, &b);
 	for (int i = height - 1; i >= 0 ; i--)
        	for (int j = width - 1; j >= 0 ; j--)
         {
@@ -15,13 +16,14 @@ unsigned char *** createMatriz(ALLEGRO_BITMAP *image){
             ptr_image[i][j][0] = (unsigned char) r;
             ptr_image[i][j][1] = (unsigned char) g;
             ptr_image[i][j][2] = (unsigned char) b;
-            //printf("x: %i y: %i pixel: %d\n", j,i,r);
         }
+
 	return ptr_image;
 }
 
 
-void deallocateMemorySpaceForImage(int height, int width, unsigned char *** image_matrix){
+void deallocateMemorySpaceForImage(int height, int width, unsigned char *** image_matrix)
+{
     for (int i = 0; i < height; ++i)
     {
         for (int j = 0; j < width; ++j)
@@ -32,11 +34,12 @@ void deallocateMemorySpaceForImage(int height, int width, unsigned char *** imag
 }
 
 
-unsigned char *** allocateMemorySpaceForImage(const int * ptr_height, const  int * ptr_width){ 
+unsigned char *** allocateMemorySpaceForImage(const int *ptr_height, const  int *ptr_width)
+{ 
+    unsigned char ***img = (unsigned char ***)calloc(*ptr_height, sizeof(unsigned char **));
 
-    unsigned char *** img = (unsigned char ***)calloc(*ptr_height, sizeof(unsigned char **));
-
-    if (img == NULL) {
+    if (img == NULL) 
+    {
         fprintf(stderr, "Out of memory");
         exit(0);
     }
@@ -66,7 +69,7 @@ unsigned char *** allocateMemorySpaceForImage(const int * ptr_height, const  int
 }
 
 
-void medianFilter(const int * ptr_height, const int * ptr_width, unsigned char *** input_img, unsigned char *** output_img)
+void medianFilter(const int *ptr_height, const int *ptr_width, unsigned char ***input_img, unsigned char ***output_img)
 {
     int scaled_filter_size = WINDOW_FILTER_SIZE / 2;
     int neighborhood_size = WINDOW_FILTER_SIZE * WINDOW_FILTER_SIZE;

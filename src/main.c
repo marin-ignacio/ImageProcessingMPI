@@ -1,26 +1,48 @@
 #include <stdio.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <string.h>
 #include <allegro5/allegro.h>
 #include <allegro5/allegro_image.h>
-#include <stdbool.h>
 #include <allegro5/allegro_primitives.h>
 #include <mpi.h>
 #include "../include/image_processing.h"
 
+#define DEVICES	2
+
 const float FPS = 60;
 
-//define bitmapss
-ALLEGRO_BITMAP *image;
 ALLEGRO_DISPLAY *display = NULL;
 ALLEGRO_EVENT_QUEUE *event_queue = NULL;
 ALLEGRO_TIMER *timer = NULL;
 
-int rank, size, name_len, image_width, image_height;
+int rank, size, name_len;
 bool running = true;
 bool redraw = true;
-char image_path[256];
+int rank_cores[DEVICES];
 
-void al_initialize()
+//------------------------------------------------------------------------------------------------------------
+// Structures
+//------------------------------------------------------------------------------------------------------------
+struct Image
+{
+	char 			path[64];
+	int 			height;
+	int 			width;
+	int 			horizontal_middle;
+	int 			vertical_middle;
+	ALLEGRO_BITMAP 	*data;
+} 
+input_image;
+
+//------------------------------------------------------------------------------------------------------------
+// Functions declaration
+//------------------------------------------------------------------------------------------------------------
+void load_image();
+void send_pixels_to_master(const int *ptr_height, const int *ptr_width, unsigned char ***output_img);
+void receive_pixels_from_client(int source, int x0, int y0, int x1, int y1, unsigned char ***output_img);
+
+int al_initialize()
 {
 	// Initialize allegro
 	if (!al_init()) 
@@ -33,29 +55,11 @@ void al_initialize()
 	al_init_image_addon();
 	al_init_primitives_addon();
 
-	if (rank == 0)
-	{
-		printf("Write image path: ");
-		scanf("%s", image_path);
-		MPI_Send(image_path, 256, MPI_BYTE, 1, 0, MPI_COMM_WORLD);
-	} 
-	else 
-	{
-		MPI_Recv(image_path, 256, MPI_BYTE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-	}
-	
-	//Read the bitmap from the image .png
-	image = al_load_bitmap(image_path);
+	return 0;
+}
 
-	if (!image)
-	{
-		printf("Error loading image path.\n");
-		exit(1);
-	}
-
-	image_height = al_get_bitmap_height(image);
-    image_width  = al_get_bitmap_width(image);
-
+int al_show_image(ALLEGRO_BITMAP *image)
+{
 	// Initialize the timer
 	timer = al_create_timer(1.0 / FPS);
 
@@ -66,7 +70,7 @@ void al_initialize()
 	}
 
 	al_set_new_display_flags(ALLEGRO_WINDOWED);
-	display = al_create_display(image_width, image_height);
+	display = al_create_display(input_image.width, input_image.height);
 
 	if (!display) 
 	{
@@ -84,7 +88,7 @@ void al_initialize()
 	}
 
 	//configure the window
-	al_set_window_title(display,"Alien Community");
+	al_set_window_title(display,"Filtered Image");
 
 	// Register event sources
 	al_register_event_source(event_queue, al_get_display_event_source(display));
@@ -96,15 +100,12 @@ void al_initialize()
 
 	// Start the timer
 	al_start_timer(timer);
-}
 
-void al_show_image()
-{
 	while (running) 
 	{ 
-		ALLEGRO_EVENT event;
+		ALLEGRO_EVENT 	event;
 		ALLEGRO_TIMEOUT timeout;
-		ALLEGRO_BITMAP *bitmap;
+		ALLEGRO_BITMAP 	*bitmap;
 
 		// Initialize timeout
 		al_init_timeout(&timeout, 0.06);
@@ -143,84 +144,206 @@ void al_show_image()
 	al_destroy_display(display);
 	al_destroy_event_queue(event_queue);
 	al_destroy_bitmap(image);
+	al_destroy_bitmap(input_image.data);
+
+	return 0;
 }
 
-
-
+//------------------------------------------------------------------------------------------------------------
+// main function
+//------------------------------------------------------------------------------------------------------------
 int main(int argc, char *argv[])
 {
-	int sub_bitmap_width, sub_bitmap_height;
-
-	char processor_name[MPI_MAX_PROCESSOR_NAME];
-
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    MPI_Get_processor_name(processor_name, &name_len);
+
+    switch (rank)
+    {
+    	case 0:
+    		for (int i = 0; i < DEVICES; i++)
+			{
+				printf("Enter number of cores for device %i: ", i);
+				scanf("%i", &rank_cores[i]);
+			}
+
+			printf("Enter image path: ");
+			scanf("%s", input_image.path);
+
+			MPI_Send(input_image.path, 64, MPI_BYTE, 1, 0, MPI_COMM_WORLD);
+			//MPI_Send(input_image.path, 64, MPI_BYTE, 2, 0, MPI_COMM_WORLD);
+			//MPI_Send(input_image.path, 64, MPI_BYTE, 3, 0, MPI_COMM_WORLD);
+
+    		break; 
+
+    	case 1:
+    		MPI_Recv(input_image.path, 64, MPI_BYTE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    		break;
+
+    	case 2:
+    		MPI_Recv(input_image.path, 64, MPI_BYTE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    		break;
+
+    	case 3:
+    		MPI_Recv(input_image.path, 64, MPI_BYTE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    		break;
+
+    	default:
+    		break;
+    }
 
 	al_initialize();
 
-	ALLEGRO_BITMAP *sub_bitmap;
+	load_image();
 
-	unsigned char ***sub_bitmap_matrix, ***filtered_matrix;
+	//------------------------------------------------------------------------------------------------------------
+	// Splits input image in four parts
+	//------------------------------------------------------------------------------------------------------------
+	ALLEGRO_BITMAP *sub_img_data;
+	int sub_img_width, sub_img_height;
 
-	if(rank == 0)
-		sub_bitmap = al_create_sub_bitmap(image, 0, 0, image_width, image_height/2 + 1);
+    switch (rank)
+    {
+    	case 0:
+    		printf("w = %i, h = %i\n", input_image.width, input_image.height);
 
-	else 
-		sub_bitmap = al_create_sub_bitmap(image, 0, (image_height/2) - 1, image_width, image_height);
+    		//sub_img_data = al_create_sub_bitmap(input_image.data, 0, 0, input_image.horizontal_middle + 1, input_image.vertical_middle + 1);
+    		sub_img_data = al_create_sub_bitmap(input_image.data, 0, 0, input_image.horizontal_middle + 1, input_image.height);
+    		break; 
 
-	sub_bitmap_height = al_get_bitmap_height(sub_bitmap);
-    sub_bitmap_width  = al_get_bitmap_width(sub_bitmap);  
+    	case 1:
+    		//sub_img_data = al_create_sub_bitmap(input_image.data, input_image.horizontal_middle - 1, 0, input_image.width, input_image.vertical_middle + 1);
+    		sub_img_data = al_create_sub_bitmap(input_image.data, input_image.horizontal_middle - 1, 0, input_image.width, input_image.height);
+    		break;
 
-	sub_bitmap_matrix = createMatriz(sub_bitmap);
-	filtered_matrix = allocateMemorySpaceForImage(&sub_bitmap_height, &sub_bitmap_width);
-	medianFilter(&sub_bitmap_height, &sub_bitmap_width, sub_bitmap_matrix, filtered_matrix);
+    	case 2:
+    		//sub_img_data = al_create_sub_bitmap(input_image.data, 0, input_image.vertical_middle - 1, input_image.horizontal_middle + 1, input_image.height);
+    		break;
 
-	if(rank == 0)
-	{
-		unsigned char *** complete_matrix = allocateMemorySpaceForImage(&image_height, &image_width);
+    	case 3:
+    		//sub_img_data = al_create_sub_bitmap(input_image.data, input_image.horizontal_middle - 1, input_image.vertical_middle - 1, input_image.width, input_image.height);
+    		break;
 
-		for (int i = 0; i < (sub_bitmap_height - 1); ++i)
-		{
-			for (int j = 0; j < sub_bitmap_width; ++j)
-			{
-				for (int color = 0; color < 3; ++color)
-				{
-					complete_matrix[i][j][color] = filtered_matrix[i][j][color];
-				}
-			}
-		}
+    	default:
+    		break;
+    }
 
-		int temp_pixel;
-		for (int i = (sub_bitmap_height - 1); i < image_height; ++i)
-			for (int j = 0; j < sub_bitmap_width; ++j)
-				for (int color = 0; color < 3; ++color)
-				{
-					MPI_Recv(&temp_pixel, 1, MPI_INT, 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-					complete_matrix[i][j][color] = temp_pixel;
-				}
-			
-		
-		generateBitmapImage(image_height, image_width, complete_matrix, "images/img.bmp");
-		//Read the bitmap from the original image
-		image = al_load_bitmap("images/img.bmp");
-		al_show_image();
-		deallocateMemorySpaceForImage(image_height, image_height, complete_matrix);
-	} 
+	//Gets the dimensions of subimage
+	sub_img_height = al_get_bitmap_height(sub_img_data);
+    sub_img_width  = al_get_bitmap_width(sub_img_data);  
 
-	else 
-	{
-		for (int i = 1; i < sub_bitmap_height; ++i)
-			for (int j = 0; j < sub_bitmap_width; ++j)
-				for (int color = 0; color < 3; ++color)
-					MPI_Send(&filtered_matrix[i][j][color], 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
-	}
+    //Creates a RGB matrix for the subimage
+    unsigned char ***sub_img = createMatrix(sub_img_data);
 
-	deallocateMemorySpaceForImage(sub_bitmap_height, sub_bitmap_width, sub_bitmap_matrix);
-	deallocateMemorySpaceForImage(sub_bitmap_height, sub_bitmap_width, filtered_matrix);
+    unsigned char ***sub_output_img = allocateMemorySpaceForImage(&sub_img_height, &sub_img_width);
+
+    //Applies the median filter on the subimage
+	medianFilter(&sub_img_height, &sub_img_width, sub_img, sub_output_img);
+
+    printf("Rank %i filter success!\n", rank);
+
+	//------------------------------------------------------------------------------------------------------------
+	// Combines the output subimages
+	//------------------------------------------------------------------------------------------------------------
+	switch (rank)
+    {
+    	case 0:
+    	{
+			unsigned char ***output_img = allocateMemorySpaceForImage(&input_image.height, &input_image.width);
+
+			printf("Rank %i (%i to %i, %i to %i)\n", rank, 0, sub_img_width, 0, sub_img_height);
+
+			for (int i = 0; i < sub_img_height; i++)
+				for (int j = 0; j < sub_img_width; j++)
+					for (int c = 0; c < COLOR_CHANNELS; c++)
+						output_img[i][j][c] = sub_output_img[i][j][c];
+
+			//receive_pixels_from_client(1, input_image.horizontal_middle, 0, input_image.width, input_image.vertical_middle, output_img);
+			receive_pixels_from_client(1, input_image.horizontal_middle, input_image.width, 0, input_image.height, output_img);
+			//receive_pixels_from_client(2, 0, input_image.vertical_middle, input_image.horizontal_middle, input_image.height, output_img);
+			//receive_pixels_from_client(3, input_image.horizontal_middle, input_image.vertical_middle, input_image.width, input_image.height, output_img);
+    	
+			//Creates and saves the output image file
+			generateBitmapImage(input_image.height, input_image.width, output_img, "images/output_img.bmp");
+
+			//Reads the output image image file
+			ALLEGRO_BITMAP *output_img_bitmap = al_load_bitmap("images/output_img.bmp");
+
+			al_show_image(output_img_bitmap);
+
+			deallocateMemorySpaceForImage(input_image.height, input_image.width, output_img);
+    		break; 
+    	}
+
+    	case 1:
+  			send_pixels_to_master(&sub_img_height, &sub_img_width, sub_output_img);
+	  		break;
+
+    	case 2:
+    		send_pixels_to_master(&sub_img_height, &sub_img_width, sub_output_img);
+    		break;
+
+    	case 3:
+ 			send_pixels_to_master(&sub_img_height, &sub_img_width, sub_output_img);
+    		break;
+
+    	default:
+    		break;
+    }
+
+	//Deallocate reserved memory
+	deallocateMemorySpaceForImage(sub_img_height, sub_img_width, sub_img);
+	deallocateMemorySpaceForImage(sub_img_height, sub_img_width, sub_output_img);
 
 	MPI_Finalize();
 
 	return 0;
+}
+
+
+//------------------------------------------------------------------------------------------------------------
+// Functions definition
+//------------------------------------------------------------------------------------------------------------
+void receive_pixels_from_client(int source, int x0, int x1, int y0, int y1, unsigned char ***output_img)
+{
+	int tmp_pixel;
+
+	printf("Rank %i (%i to %i, %i to %i)\n", source, x0, x1, y0, y1);
+
+	for (int i = y0; i < y1; i++)
+		for (int j = x0; j < x1; j++)
+			for (int c = 0; c < COLOR_CHANNELS; c++)
+			{
+				MPI_Recv(&tmp_pixel, 1, MPI_INT, source, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				output_img[i][j][c] = tmp_pixel;
+			}
+
+	printf("Rank %i received pixels from %i success!\n", rank, source);
+}
+
+
+void send_pixels_to_master(const int *ptr_height, const int *ptr_width, unsigned char ***sub_output_img)
+{
+    for (int i = 0; i < *ptr_height; i++)
+		for (int j = 0; j < *ptr_width; j++)
+			for (int c = 0; c < COLOR_CHANNELS; c++)
+				MPI_Send(&sub_output_img[i][j][c], 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+}
+
+
+void load_image()
+{
+	//Read the bitmap from the image .png
+	input_image.data = al_load_bitmap(input_image.path);
+
+	if (!input_image.data)
+	{
+		printf("Error loading image path.\n");
+		exit(1);
+	}
+
+    input_image.width  			  = al_get_bitmap_width(input_image.data);
+	input_image.height            = al_get_bitmap_height(input_image.data);
+	input_image.horizontal_middle = input_image.width  / 2;
+    input_image.vertical_middle   = input_image.height / 2;
 }

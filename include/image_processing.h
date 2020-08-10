@@ -17,12 +17,12 @@
 #define fileHeaderSize 14
 #define infoHeaderSize 40
 
-//functions
-unsigned char *** createMatriz(ALLEGRO_BITMAP *image);
 
-unsigned char *** allocateMemorySpaceForImage(const int * ptr_height, const  int * ptr_width);
+unsigned char *** createMatrix(ALLEGRO_BITMAP *image);
 
-void medianFilter(const int * ptr_height, const int * ptr_width, unsigned char *** input_img, unsigned char *** output_img);
+unsigned char *** allocateMemorySpaceForImage(const int *ptr_height, const  int *ptr_width);
+
+void medianFilter(const int *ptr_height, const int *ptr_width, unsigned char ***input_img, unsigned char ***output_img);
 
 int calculateMedian(unsigned char * arr, int length);
 
